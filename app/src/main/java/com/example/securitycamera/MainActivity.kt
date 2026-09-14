@@ -9,6 +9,8 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
+import android.app.AlertDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -82,6 +84,8 @@ class MainActivity : ComponentActivity() {
 
     private var cameraStarted = false
 
+    private var cameraId: Int? = null
+
     private var selectedServerType by mutableStateOf("hosted")
 
     private var serverAddress by mutableStateOf("")
@@ -132,8 +136,51 @@ class MainActivity : ComponentActivity() {
             ) ?: "hosted"
 
         showConnectionScreen()
+
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+
+                override fun handleOnBackPressed() {
+                    showExitConfirmation()
+                }
+            }
+        )
     }
 
+    private fun showExitConfirmation() {
+        val cameraText = cameraId?.let {
+            "Camera $it"
+        } ?: "the camera"
+
+        AlertDialog.Builder(this)
+            .setTitle("Exit App?")
+            .setMessage(
+                "Closing the app will disconnect $cameraText."
+            )
+            .setPositiveButton("Yes") { _, _ ->
+                exitCameraApp()
+            }
+            .setNegativeButton("No", null)
+            .show()
+    }
+
+    private fun exitCameraApp() {
+        serverConnected = false
+
+        webSocket?.close(
+            1000,
+            "User exited application"
+        )
+
+        webSocket = null
+
+        cameraId = null
+
+        cameraExecutor.shutdown()
+
+        finish()
+    }
 
     /*
      * ---------------------------------------------------------
@@ -474,21 +521,34 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    override fun onMessage(
+                        webSocket: WebSocket,
+                        text: String
+                    ) {
+                        if (text.startsWith("CAMERA_ID:")) {
+                            val idText = text.removePrefix("CAMERA_ID:")
+
+                            cameraId = idText.toIntOrNull()
+
+                            println(
+                                "ASSIGNED CAMERA ID: $cameraId"
+                            )
+                        }
+                    }
+
 
                     override fun onFailure(
                         webSocket: WebSocket,
                         t: Throwable,
                         response: okhttp3.Response?
                     ) {
-
                         serverConnected = false
-
                         isConnecting = false
 
-                        runOnUiThread {
+                        stopCamera()
 
-                            connectionStatus =
-                                "Connection failed."
+                        runOnUiThread {
+                            connectionStatus = "Connection failed."
 
                             Toast.makeText(
                                 this@MainActivity,
@@ -497,13 +557,8 @@ class MainActivity : ComponentActivity() {
                             ).show()
                         }
 
-                        println(
-                            "WEBSOCKET CONNECTION FAILED"
-                        )
-
-                        println(
-                            "Error: ${t.message}"
-                        )
+                        println("WEBSOCKET CONNECTION FAILED")
+                        println("Error: ${t.message}")
                     }
 
 
@@ -512,8 +567,9 @@ class MainActivity : ComponentActivity() {
                         code: Int,
                         reason: String
                     ) {
-
                         serverConnected = false
+
+                        stopCamera()
 
                         println(
                             "WebSocket closed: $code - $reason"
@@ -523,6 +579,26 @@ class MainActivity : ComponentActivity() {
             )
     }
 
+    private fun stopCamera() {
+        try {
+            val cameraProviderFuture =
+                ProcessCameraProvider.getInstance(this)
+
+            cameraProviderFuture.addListener({
+                try {
+                    val cameraProvider = cameraProviderFuture.get()
+                    cameraProvider.unbindAll()
+                } catch (exception: Exception) {
+                    exception.printStackTrace()
+                }
+            }, ContextCompat.getMainExecutor(this))
+
+            cameraStarted = false
+
+        } catch (exception: Exception) {
+            exception.printStackTrace()
+        }
+    }
 
     /*
      * ---------------------------------------------------------
